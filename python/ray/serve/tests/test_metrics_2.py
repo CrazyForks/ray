@@ -10,6 +10,10 @@ from fastapi import FastAPI
 import ray
 from ray import serve
 from ray._common.test_utils import SignalActor, wait_for_condition
+from ray._private.test_utils import (
+    PrometheusTimeseries,
+    fetch_prometheus_metric_timeseries,
+)
 from ray.serve._private.constants import DEFAULT_LATENCY_BUCKET_MS
 from ray.serve._private.test_utils import (
     get_application_url,
@@ -20,6 +24,7 @@ from ray.serve.handle import DeploymentHandle
 from ray.serve.metrics import Counter, Gauge, Histogram
 from ray.serve.tests.test_config_files.grpc_deployment import g, g2
 from ray.serve.tests.test_metrics import (
+    MetricHistory,
     check_metric_float_eq,
     check_sum_metric_eq,
     get_metric_dictionaries,
@@ -112,10 +117,13 @@ class TestRequestContextMetrics:
         assert resp.text == "world"
         resp = httpx.get("http://127.0.0.1:8000/app3")
         assert resp.status_code == 500
+        timeseries = PrometheusTimeseries()
 
         wait_for_condition(
             lambda: len(
-                get_metric_dictionaries("serve_deployment_processing_latency_ms_sum")
+                fetch_prometheus_metric_timeseries(["localhost:9999"], timeseries)[
+                    "ray_serve_deployment_processing_latency_ms_sum"
+                ]
             )
             == 3,
             timeout=40,
@@ -135,7 +143,14 @@ class TestRequestContextMetrics:
                 (
                     qps_metrics_route,
                     qps_metrics_app_name,
-                ) = self._generate_metrics_summary(get_metric_dictionaries(metric_name))
+                ) = self._generate_metrics_summary(
+                    [
+                        sample.labels
+                        for sample in fetch_prometheus_metric_timeseries(
+                            ["localhost:9999"], timeseries
+                        )[metric_name]
+                    ]
+                )
                 assert qps_metrics_app_name[deployment_name] == app_name
                 assert qps_metrics_route[deployment_name] == {route}
                 return True
@@ -144,19 +159,26 @@ class TestRequestContextMetrics:
 
         # Check replica qps & latency
         wait_for_route_and_name(
-            "serve_deployment_request_counter", "f", "app1", "/app1"
+            "ray_serve_deployment_request_counter_total", "f", "app1", "/app1"
         )
         wait_for_route_and_name(
-            "serve_deployment_request_counter", "g", "app2", "/app2"
+            "ray_serve_deployment_request_counter_total", "g", "app2", "/app2"
         )
-        wait_for_route_and_name("serve_deployment_error_counter", "h", "app3", "/app3")
+        wait_for_route_and_name(
+            "ray_serve_deployment_error_counter_total", "h", "app3", "/app3"
+        )
 
         # Check http proxy qps & latency
         for metric_name in [
-            "serve_num_http_requests",
-            "serve_http_request_latency_ms_sum",
+            "ray_serve_num_http_requests_total",
+            "ray_serve_http_request_latency_ms_sum",
         ]:
-            metrics = get_metric_dictionaries(metric_name)
+            metrics = [
+                sample.labels
+                for sample in fetch_prometheus_metric_timeseries(
+                    ["localhost:9999"], timeseries
+                )[metric_name]
+            ]
             assert {metric["route"] for metric in metrics} == {
                 "/app1",
                 "/app2",
@@ -164,12 +186,17 @@ class TestRequestContextMetrics:
             }
 
         for metric_name in [
-            "serve_handle_request_counter",
-            "serve_num_router_requests",
-            "serve_deployment_processing_latency_ms_sum",
+            "ray_serve_handle_request_counter_total",
+            "ray_serve_num_router_requests_total",
+            "ray_serve_deployment_processing_latency_ms_sum",
         ]:
             metrics_route, metrics_app_name = self._generate_metrics_summary(
-                get_metric_dictionaries(metric_name)
+                [
+                    sample.labels
+                    for sample in fetch_prometheus_metric_timeseries(
+                        ["localhost:9999"], timeseries
+                    )[metric_name]
+                ]
             )
             msg = f"Incorrect metrics for {metric_name}"
             assert metrics_route["f"] == {"/app1"}, msg
@@ -203,11 +230,14 @@ class TestRequestContextMetrics:
         ping_fruit_stand(channel, app_name2)
         with pytest.raises(grpc.RpcError):
             ping_grpc_call_method(channel, app_name3)
+        timeseries = PrometheusTimeseries()
 
         # app1 has 1 deployment, app2 has 3 deployments, and app3 has 1 deployment.
         wait_for_condition(
             lambda: len(
-                get_metric_dictionaries("serve_deployment_processing_latency_ms_sum")
+                fetch_prometheus_metric_timeseries(["localhost:9999"], timeseries)[
+                    "ray_serve_deployment_processing_latency_ms_sum"
+                ]
             )
             == 5,
             timeout=40,
@@ -228,7 +258,12 @@ class TestRequestContextMetrics:
                     qps_metrics_route,
                     qps_metrics_app_name,
                 ) = self._generate_metrics_summary(
-                    get_metric_dictionaries(_metric_name)
+                    [
+                        sample.labels
+                        for sample in fetch_prometheus_metric_timeseries(
+                            ["localhost:9999"], timeseries
+                        )[_metric_name]
+                    ]
                 )
                 assert qps_metrics_app_name[deployment_name] == app_name
                 assert qps_metrics_route[deployment_name] == {route}
@@ -238,21 +273,32 @@ class TestRequestContextMetrics:
 
         # Check replica qps & latency
         wait_for_route_and_name(
-            "serve_deployment_request_counter", depl_name1, app_name1, app_name1
+            "ray_serve_deployment_request_counter_total",
+            depl_name1,
+            app_name1,
+            app_name1,
         )
         wait_for_route_and_name(
-            "serve_deployment_request_counter", depl_name2, app_name2, app_name2
+            "ray_serve_deployment_request_counter_total",
+            depl_name2,
+            app_name2,
+            app_name2,
         )
         wait_for_route_and_name(
-            "serve_deployment_error_counter", depl_name3, app_name3, app_name3
+            "ray_serve_deployment_error_counter_total", depl_name3, app_name3, app_name3
         )
 
         # Check grpc proxy qps & latency
         for metric_name in [
-            "serve_num_grpc_requests",
-            "serve_grpc_request_latency_ms_sum",
+            "ray_serve_num_grpc_requests_total",
+            "ray_serve_grpc_request_latency_ms_sum",
         ]:
-            metrics = get_metric_dictionaries(metric_name)
+            metrics = [
+                sample.labels
+                for sample in fetch_prometheus_metric_timeseries(
+                    ["localhost:9999"], timeseries
+                )[metric_name]
+            ]
             assert {metric["route"] for metric in metrics} == {
                 "app1",
                 "app2",
@@ -260,12 +306,17 @@ class TestRequestContextMetrics:
             }
 
         for metric_name in [
-            "serve_handle_request_counter",
-            "serve_num_router_requests",
-            "serve_deployment_processing_latency_ms_sum",
+            "ray_serve_handle_request_counter_total",
+            "ray_serve_num_router_requests_total",
+            "ray_serve_deployment_processing_latency_ms_sum",
         ]:
             metrics_route, metrics_app_name = self._generate_metrics_summary(
-                get_metric_dictionaries(metric_name)
+                [
+                    sample.labels
+                    for sample in fetch_prometheus_metric_timeseries(
+                        ["localhost:9999"], timeseries
+                    )[metric_name]
+                ]
             )
             msg = f"Incorrect metrics for {metric_name}"
             assert metrics_route[depl_name1] == {"app1"}, msg
@@ -316,8 +367,13 @@ class TestRequestContextMetrics:
         #   {xxx, route:/api}
         # g2 deployment metrics:
         #   {xxx, route:/api2}
+        timeseries = PrometheusTimeseries()
         wait_for_condition(
-            lambda: len(get_metric_dictionaries("serve_deployment_request_counter"))
+            lambda: len(
+                fetch_prometheus_metric_timeseries(["localhost:9999"], timeseries)[
+                    "ray_serve_deployment_request_counter_total"
+                ]
+            )
             == 4,
             timeout=40,
         )
@@ -325,7 +381,12 @@ class TestRequestContextMetrics:
             requests_metrics_route,
             requests_metrics_app_name,
         ) = self._generate_metrics_summary(
-            get_metric_dictionaries("serve_deployment_request_counter")
+            [
+                sample.labels
+                for sample in fetch_prometheus_metric_timeseries(
+                    ["localhost:9999"], timeseries
+                )["ray_serve_deployment_request_counter_total"]
+            ]
         )
         assert requests_metrics_route["G"] == {"/api", "/api2"}
         assert requests_metrics_route["g1"] == {"/api"}
@@ -360,21 +421,23 @@ class TestRequestContextMetrics:
         resp = httpx.get(f"{base_url}/api2/abc123")
         assert resp.text == '"ok2"'
 
+        def check():
+            metrics = get_metric_dictionaries("serve_deployment_request_counter_total")
+            (
+                requests_metrics_route,
+                _,
+            ) = self._generate_metrics_summary(metrics)
+            assert len(metrics) == 2
+            assert requests_metrics_route["A"] == {
+                route_prefix + "/api",
+                route_prefix + "/api2/{user_id}",
+            }
+            return True
+
         wait_for_condition(
-            lambda: len(get_metric_dictionaries("serve_deployment_request_counter"))
-            == 2,
+            lambda: check(),
             timeout=40,
         )
-        (
-            requests_metrics_route,
-            requests_metrics_app_name,
-        ) = self._generate_metrics_summary(
-            get_metric_dictionaries("serve_deployment_request_counter")
-        )
-        assert requests_metrics_route["A"] == {
-            route_prefix + "/api",
-            route_prefix + "/api2/{user_id}",
-        }
 
     def test_customer_metrics_with_context(self, metrics_start_shutdown):
         @serve.deployment
@@ -423,16 +486,23 @@ class TestRequestContextMetrics:
                     ray.serve.context._INTERNAL_REPLICA_CONTEXT.replica_id.unique_id,
                 ]
 
+        timeseries = PrometheusTimeseries()
         serve.run(Model.bind(), name="app", route_prefix="/app")
         http_url = get_application_url("HTTP", "app")
         resp = httpx.get(http_url)
         deployment_name, replica_id = resp.json()
         wait_for_condition(
-            lambda: len(get_metric_dictionaries("my_gauge")) == 1,
+            lambda: len(
+                fetch_prometheus_metric_timeseries(["localhost:9999"], timeseries)[
+                    "ray_my_gauge"
+                ]
+            )
+            == 1,
             timeout=40,
         )
-
-        counter_metrics = get_metric_dictionaries("my_counter")
+        counter_metrics = fetch_prometheus_metric_timeseries(
+            ["localhost:9999"], timeseries
+        )["ray_my_counter_total"]
         assert len(counter_metrics) == 1
         expected_metrics = {
             "my_static_tag": "static_value",
@@ -442,7 +512,7 @@ class TestRequestContextMetrics:
             "application": "app",
             "route": "/app",
         }
-        self.verify_metrics(counter_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= counter_metrics[0].labels.items()
 
         expected_metrics = {
             "my_static_tag": "static_value",
@@ -452,9 +522,11 @@ class TestRequestContextMetrics:
             "application": "app",
             "route": "/app",
         }
-        gauge_metrics = get_metric_dictionaries("my_gauge")
+        gauge_metrics = fetch_prometheus_metric_timeseries(
+            ["localhost:9999"], timeseries
+        )["ray_my_gauge"]
         assert len(counter_metrics) == 1
-        self.verify_metrics(gauge_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= gauge_metrics[0].labels.items()
 
         expected_metrics = {
             "my_static_tag": "static_value",
@@ -464,9 +536,11 @@ class TestRequestContextMetrics:
             "application": "app",
             "route": "/app",
         }
-        histogram_metrics = get_metric_dictionaries("my_histogram_sum")
+        histogram_metrics = fetch_prometheus_metric_timeseries(
+            ["localhost:9999"], timeseries
+        )["ray_my_histogram_sum"]
         assert len(histogram_metrics) == 1
-        self.verify_metrics(histogram_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= histogram_metrics[0].labels.items()
 
     @pytest.mark.parametrize("use_actor", [False, True])
     def test_serve_metrics_outside_serve(self, use_actor, metrics_start_shutdown):
@@ -564,34 +638,55 @@ class TestRequestContextMetrics:
         http_url = get_application_url("HTTP", "app")
         resp = httpx.get(http_url)
         assert resp.text == "hello"
+        timeseries = PrometheusTimeseries()
         wait_for_condition(
-            lambda: len(get_metric_dictionaries("my_gauge")) == 1,
+            lambda: len(
+                fetch_prometheus_metric_timeseries(["localhost:9999"], timeseries)[
+                    "ray_my_gauge"
+                ]
+            )
+            == 1,
             timeout=40,
         )
 
-        counter_metrics = get_metric_dictionaries("my_counter")
+        counter_metrics = [
+            sample.labels
+            for sample in fetch_prometheus_metric_timeseries(
+                ["localhost:9999"], timeseries
+            )["ray_my_counter_total"]
+        ]
         assert len(counter_metrics) == 1
         expected_metrics = {
             "my_static_tag": "static_value",
             "my_runtime_tag": "100",
         }
-        self.verify_metrics(counter_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= counter_metrics[0].items()
 
-        gauge_metrics = get_metric_dictionaries("my_gauge")
+        gauge_metrics = [
+            sample.labels
+            for sample in fetch_prometheus_metric_timeseries(
+                ["localhost:9999"], timeseries
+            )["ray_my_gauge"]
+        ]
         assert len(counter_metrics) == 1
         expected_metrics = {
             "my_static_tag": "static_value",
             "my_runtime_tag": "300",
         }
-        self.verify_metrics(gauge_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= gauge_metrics[0].items()
 
-        histogram_metrics = get_metric_dictionaries("my_histogram_sum")
+        histogram_metrics = [
+            sample.labels
+            for sample in fetch_prometheus_metric_timeseries(
+                ["localhost:9999"], timeseries
+            )["ray_my_histogram_sum"]
+        ]
         assert len(histogram_metrics) == 1
         expected_metrics = {
             "my_static_tag": "static_value",
             "my_runtime_tag": "200",
         }
-        self.verify_metrics(histogram_metrics[0], expected_metrics)
+        assert expected_metrics.items() <= histogram_metrics[0].items()
 
 
 class TestHandleMetrics:
@@ -668,6 +763,7 @@ class TestHandleMetrics:
         """Check that disconnected queued queries are tracked correctly."""
 
         signal = SignalActor.remote()
+        metric_history = MetricHistory()
 
         @serve.deployment(
             max_ongoing_requests=1,
@@ -691,6 +787,7 @@ class TestHandleMetrics:
             expected_tags={
                 "SessionName": ray._private.worker.global_worker.node.session_name
             },
+            metric_history=metric_history,
         )
         print("ray_serve_num_scheduling_tasks updated successfully.")
         wait_for_condition(
@@ -705,8 +802,11 @@ class TestHandleMetrics:
             expected_tags={
                 "SessionName": ray._private.worker.global_worker.node.session_name
             },
+            metric_history=metric_history,
         )
         print("serve_num_scheduling_tasks_in_backoff updated successfully.")
+
+        timeseries = PrometheusTimeseries()
 
         @ray.remote(num_cpus=0)
         def do_request():
@@ -726,6 +826,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_ongoing_http_requests",
             expected=1,
+            timeseries=timeseries,
         )
         print("ray_serve_num_ongoing_http_requests updated successfully.")
 
@@ -739,6 +840,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_deployment_queued_queries",
             expected=num_queued_requests,
+            timeseries=timeseries,
         )
         print("ray_serve_deployment_queued_queries updated successfully.")
         wait_for_condition(
@@ -746,6 +848,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_ongoing_http_requests",
             expected=num_queued_requests + 1,
+            timeseries=timeseries,
         )
         print("ray_serve_num_ongoing_http_requests updated successfully.")
 
@@ -756,6 +859,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_scheduling_tasks",
             expected=2,
+            timeseries=timeseries,
         )
         print("ray_serve_num_scheduling_tasks updated successfully.")
         wait_for_condition(
@@ -763,11 +867,13 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_scheduling_tasks_in_backoff",
             expected=2,
+            timeseries=timeseries,
         )
         print("serve_num_scheduling_tasks_in_backoff updated successfully.")
 
         # Disconnect all requests by cancelling the Ray tasks.
         [ray.cancel(ref, force=True) for ref in request_refs]
+        timeseries.flush()
         print("Cancelled all HTTP requests.")
 
         wait_for_condition(
@@ -775,6 +881,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_deployment_queued_queries",
             expected=0,
+            timeseries=timeseries,
         )
         print("ray_serve_deployment_queued_queries updated successfully.")
 
@@ -784,6 +891,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_ongoing_http_requests",
             expected=0,
+            timeseries=timeseries,
         )
         print("ray_serve_num_ongoing_http_requests updated successfully.")
 
@@ -792,6 +900,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_scheduling_tasks",
             expected=0,
+            timeseries=timeseries,
         )
         print("ray_serve_num_scheduling_tasks updated successfully.")
         wait_for_condition(
@@ -799,6 +908,7 @@ class TestHandleMetrics:
             timeout=15,
             metric_name="ray_serve_num_scheduling_tasks_in_backoff",
             expected=0,
+            timeseries=timeseries,
         )
         print("serve_num_scheduling_tasks_in_backoff updated successfully.")
 
@@ -828,6 +938,7 @@ class TestHandleMetrics:
         )
 
         requests_sent = {1: 0, 2: 0}
+        timeseries = PrometheusTimeseries()
         for i in range(5):
             index = random.choice([1, 2])
             print(f"Sending request to d{index}")
@@ -839,6 +950,7 @@ class TestHandleMetrics:
                 metric_name="ray_serve_num_ongoing_requests_at_replicas",
                 tags={"application": "app1", "deployment": "d1"},
                 expected=requests_sent[1],
+                timeseries=timeseries,
             )
 
             wait_for_condition(
@@ -846,6 +958,7 @@ class TestHandleMetrics:
                 metric_name="ray_serve_num_ongoing_requests_at_replicas",
                 tags={"application": "app1", "deployment": "d2"},
                 expected=requests_sent[2],
+                timeseries=timeseries,
             )
 
             wait_for_condition(
@@ -853,6 +966,7 @@ class TestHandleMetrics:
                 metric_name="ray_serve_num_ongoing_requests_at_replicas",
                 tags={"application": "app1", "deployment": "Router"},
                 expected=i + 1,
+                timeseries=timeseries,
             )
 
         # Release signal, the number of running requests should drop to 0
@@ -862,6 +976,7 @@ class TestHandleMetrics:
             metric_name="ray_serve_num_ongoing_requests_at_replicas",
             tags={"application": "app1"},
             expected=0,
+            timeseries=timeseries,
         )
 
 

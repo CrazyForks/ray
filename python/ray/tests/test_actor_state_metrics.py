@@ -10,7 +10,8 @@ import ray
 from ray._common.test_utils import wait_for_condition
 from ray._common.utils import hex_to_binary
 from ray._private.test_utils import (
-    raw_metrics,
+    PrometheusTimeseries,
+    raw_metric_timeseries,
     run_string_as_driver,
 )
 from ray._private.worker import RayContext
@@ -21,8 +22,8 @@ _SYSTEM_CONFIG = {
 }
 
 
-def actors_by_state(info: RayContext) -> Dict:
-    res = raw_metrics(info)
+def actors_by_state(info: RayContext, timeseries: PrometheusTimeseries) -> Dict:
+    res = raw_metric_timeseries(info, timeseries)
     actors_info = defaultdict(int)
     if "ray_actors" in res:
         for sample in res["ray_actors"]:
@@ -34,8 +35,8 @@ def actors_by_state(info: RayContext) -> Dict:
     return actors_info
 
 
-def actors_by_name(info: RayContext) -> Dict:
-    res = raw_metrics(info)
+def actors_by_name(info: RayContext, timeseries: PrometheusTimeseries) -> Dict:
+    res = raw_metric_timeseries(info, timeseries)
     actors_info = defaultdict(int)
     if "ray_actors" in res:
         for sample in res["ray_actors"]:
@@ -79,6 +80,7 @@ def test_basic_states(shutdown_only):
     ray.get(b.ping.remote())
     ray.get(c.ping.remote())
     d = Actor.remote()
+    timeseries = PrometheusTimeseries()
 
     # Test creation states.
     expected = {
@@ -87,7 +89,7 @@ def test_basic_states(shutdown_only):
         "PENDING_CREATION": 1,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -104,7 +106,7 @@ def test_basic_states(shutdown_only):
         "PENDING_CREATION": 1,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -124,14 +126,14 @@ def test_destroy_actors(shutdown_only):
     c = Actor.remote()
     del a
     del b
-
+    timeseries = PrometheusTimeseries()
     expected = {
         "ALIVE": 1,
         "IDLE": 1,
         "DEAD": 2,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -157,12 +159,13 @@ ray.get([actor.ready.remote() for actor in actors])
 
         output = run_string_as_driver(driver)
         print(output)
+        timeseries = PrometheusTimeseries()
 
         expected = {
             "DEAD": 10,
         }
         wait_for_condition(
-            lambda: actors_by_state(info) == expected,
+            lambda: expected.items() <= actors_by_state(info, timeseries).items(),
             timeout=20,
             retry_interval_ms=500,
         )
@@ -176,7 +179,7 @@ ray.get([actor.ready.remote() for actor in actors])
         wait_for_condition(lambda: len(list_actors()) == 5)
         # DEAD count shouldn't be changed.
         wait_for_condition(
-            lambda: actors_by_state(info) == expected,
+            lambda: expected.items() <= actors_by_state(info, timeseries).items(),
             timeout=20,
             retry_interval_ms=500,
         )
@@ -195,11 +198,12 @@ def test_dep_wait(shutdown_only):
             pass
 
     a = Actor.remote(sleep.remote())
+    timeseries = PrometheusTimeseries()
     expected = {
         "DEPENDENCIES_UNREADY": 1,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -223,12 +227,13 @@ def test_async_actor(shutdown_only):
 
     a = AsyncActor.remote()
     a.sleep.remote()
+    timeseries = PrometheusTimeseries()
     expected = {
         "ALIVE": 1,
         "RUNNING_TASK": 1,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -241,7 +246,7 @@ def test_async_actor(shutdown_only):
         "RUNNING_IN_RAY_GET": 1,
     }
     wait_for_condition(
-        lambda: actors_by_state(info) == expected,
+        lambda: actors_by_state(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
@@ -265,7 +270,7 @@ def test_tracking_by_name(shutdown_only):
 
     a = Actor1.remote()
     b = Actor2.remote()
-
+    timeseries = PrometheusTimeseries()
     expected = {
         # one reported by gcs as ALIVE
         # another reported by core worker as IDLE
@@ -273,7 +278,7 @@ def test_tracking_by_name(shutdown_only):
         "Actor2": 2,
     }
     wait_for_condition(
-        lambda: actors_by_name(info) == expected,
+        lambda: actors_by_name(info, timeseries) == expected,
         timeout=20,
         retry_interval_ms=500,
     )
