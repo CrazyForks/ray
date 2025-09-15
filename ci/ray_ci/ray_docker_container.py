@@ -83,6 +83,9 @@ class RayDockerContainer(DockerContainer):
         )
 
     def _get_image_names(self) -> List[str]:
-        ray_repo = f"rayproject/{self.image_type}"
+        repo_name = self.image_type
+        if self.image_type == RayType.RAY_EXTRA:
+            repo_name = RayType.RAY
+        ray_repo = f"rayproject/{repo_name}"
 
         return [f"{ray_repo}:{tag}" for tag in self._get_image_tags(external=True)]
