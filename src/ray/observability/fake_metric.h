@@ -21,7 +21,7 @@ namespace observability {
 
 class FakeMetric : public MetricInterface {
  public:
-  FakeMetric() = default;
+  FakeMetric(bool is_counter = false) : is_counter_(is_counter) {}
   ~FakeMetric() = default;
 
   void Record(double value) override { Record(value, stats::TagsType{}); }
@@ -31,7 +31,11 @@ class FakeMetric : public MetricInterface {
     for (const auto &tag : tags) {
       tags_map[tag.first.name()] = tag.second;
     }
-    tag_to_value_.emplace(std::move(tags_map), value);
+    if (is_counter_) {
+      tag_to_value_[std::move(tags_map)] += value;
+    } else {
+      tag_to_value_.emplace(std::move(tags_map), value);
+    }
   }
 
   void Record(double value,
@@ -64,6 +68,7 @@ class FakeMetric : public MetricInterface {
  private:
   absl::flat_hash_map<absl::flat_hash_map<std::string, std::string>, double>
       tag_to_value_;
+  bool is_counter_;
 };
 
 }  // namespace observability

@@ -106,6 +106,7 @@ ray_cc_library(
         "ray_event_recorder.h",
     ],
     deps = [
+        ":metric_interface",
         ":ray_event",
         ":ray_event_recorder_interface",
         "//src/ray/common:asio",
