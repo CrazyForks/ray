@@ -563,6 +563,7 @@ void GcsNodeManager::UpdateAliveNode(
   if (resource_view_sync_message.is_draining()) {
     snapshot->set_state(rpc::NodeSnapshot::DRAINING);
   }
+  WriteNodeExportEvent(*maybe_node_info.value(), /*is_register_event*/ false);
 }
 
 }  // namespace gcs
